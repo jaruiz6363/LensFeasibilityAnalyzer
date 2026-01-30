@@ -1,0 +1,23 @@
+{
+  "NAImage": 0.25,
+  "FieldImage": 2.5,
+  "Magnification": -5.0,
+  "WDNominal": 10.0,
+  "WDMin": 8.0,
+  "WDMax": 15.0,
+  "DistortionType": "None",
+  "DistortionMax": 1.0,
+  "IsReversible": false,
+  "TelecentricObject": false,
+  "TelecentricImage": true,
+  "FlatField": true,
+  "FieldCurvatureMax": 1.0,
+  "WavelengthPrimary": 550.0,
+  "WavelengthMin": 486.1,
+  "WavelengthMax": 656.3,
+  "MaxTotalTrack": 0,
+  "MaxElements": 0,
+  "AllowAspheres": true,
+  "TargetRMSWavefront": 0.07,
+  "ToleranceGrade": 2
+}
