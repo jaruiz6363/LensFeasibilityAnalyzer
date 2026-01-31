@@ -266,6 +266,105 @@ namespace FeasibilityAnalyzer
             sb.AppendLine($"  » {output.Tolerance.Recommendation}");
             sb.AppendLine();
             
+            // Relative illumination analysis
+            WriteSection(sb, "RELATIVE ILLUMINATION ANALYSIS");
+            sb.AppendLine($"  Min relative illumination: {output.RelativeIllumination.MinRelativeIllumination:P1}");
+            sb.AppendLine($"  Illumination uniformity:   {output.RelativeIllumination.IlluminationUniformity:P1}");
+            sb.AppendLine($"  Natural vignetting (edge): {output.RelativeIllumination.NaturalVignettingAtEdge:P1}");
+            sb.AppendLine($"  Distortion contribution:   {output.RelativeIllumination.DistortionContribution * 100:F1}%");
+            sb.AppendLine($"  Pupil aberration contrib:  {output.RelativeIllumination.PupilAberrationContribution * 100:F2}%");
+            sb.AppendLine($"  Severity:                  {output.RelativeIllumination.Severity}");
+            sb.AppendLine();
+
+            if (output.RelativeIllumination.IlluminationVsField.Count > 0)
+            {
+                sb.AppendLine("  Illumination vs Field:");
+                sb.AppendLine("    Field    RI      cos⁴    Dist.Effect");
+                sb.AppendLine("    ─────    ────    ────    ───────────");
+                foreach (var pt in output.RelativeIllumination.IlluminationVsField)
+                {
+                    sb.AppendLine($"    {pt.NormalizedField:F1}      {pt.RelativeIllumination:F3}   {pt.NaturalVignetting:F3}   {pt.DistortionEffect:F3}");
+                }
+                sb.AppendLine();
+            }
+
+            sb.AppendLine($"  » {output.RelativeIllumination.Recommendation}");
+            sb.AppendLine();
+
+            // Differential distortion analysis
+            WriteSection(sb, "DIFFERENTIAL DISTORTION ANALYSIS");
+            sb.AppendLine($"  Max differential distortion:  {output.DifferentialDistortion.MaxDifferentialDistortion:F2}%");
+            sb.AppendLine($"  Local mag variation:          {output.DifferentialDistortion.LocalMagnificationVariation:F2}%");
+            sb.AppendLine($"  T-R difference at edge:       {output.DifferentialDistortion.TangentialRadialDifference:F2}%");
+            sb.AppendLine($"  Is uniform (<0.5%):           {(output.DifferentialDistortion.IsUniform ? "Yes" : "No")}");
+            sb.AppendLine($"  Metrology impact:             {output.DifferentialDistortion.MetrologyImpact}");
+            sb.AppendLine();
+
+            if (output.DifferentialDistortion.DifferentialVsField.Count > 0)
+            {
+                sb.AppendLine("  Differential Distortion vs Field:");
+                sb.AppendLine("    Field    β(θ)      dβ/dθ     Diff(%)");
+                sb.AppendLine("    ─────    ─────     ─────     ───────");
+                foreach (var pt in output.DifferentialDistortion.DifferentialVsField)
+                {
+                    sb.AppendLine($"    {pt.NormalizedField:F1}      {pt.LocalMagnification:F4}    {pt.MagnificationGradient:F4}    {pt.DifferentialDistortion:F3}");
+                }
+                sb.AppendLine();
+            }
+
+            sb.AppendLine($"  » {output.DifferentialDistortion.Recommendation}");
+            sb.AppendLine();
+
+            // Illumination-distortion conflict analysis
+            WriteSection(sb, "ILLUMINATION / DISTORTION / DIFFERENTIAL CONFLICT ANALYSIS");
+            sb.AppendLine($"  Has conflict:           {(output.IlluminationDistortionConflict.HasConflict ? "Yes" : "No")}");
+            sb.AppendLine($"  Conflict severity:      {output.IlluminationDistortionConflict.ConflictSeverity}");
+            sb.AppendLine($"  Conflict score:         {output.IlluminationDistortionConflict.ConflictScore:F0}/100");
+            sb.AppendLine();
+
+            if (output.IlluminationDistortionConflict.IlluminationDistortionConflict)
+            {
+                WriteSubSection(sb, "Illumination vs Distortion Conflict");
+                sb.AppendLine($"    {output.IlluminationDistortionConflict.IlluminationDistortionDetail}");
+                sb.AppendLine();
+            }
+
+            if (output.IlluminationDistortionConflict.DifferentialSineConditionConflict)
+            {
+                WriteSubSection(sb, "Differential Distortion vs Sine Condition Conflict");
+                sb.AppendLine($"    {output.IlluminationDistortionConflict.DifferentialSineConditionDetail}");
+                sb.AppendLine();
+            }
+
+            if (output.IlluminationDistortionConflict.IlluminationTelecentricityConflict)
+            {
+                WriteSubSection(sb, "Illumination vs Telecentricity Conflict");
+                sb.AppendLine($"    {output.IlluminationDistortionConflict.IlluminationTelecentricityDetail}");
+                sb.AppendLine();
+            }
+
+            if (output.IlluminationDistortionConflict.Conflicts.Count > 0)
+            {
+                sb.AppendLine("  Identified Conflicts:");
+                foreach (var c in output.IlluminationDistortionConflict.Conflicts)
+                    sb.AppendLine($"    ⚠ {c}");
+                sb.AppendLine();
+            }
+
+            if (output.IlluminationDistortionConflict.Recommendations.Count > 0)
+            {
+                sb.AppendLine("  Recommendations:");
+                foreach (var r in output.IlluminationDistortionConflict.Recommendations)
+                    sb.AppendLine($"    → {r}");
+                sb.AppendLine();
+            }
+
+            if (!output.IlluminationDistortionConflict.HasConflict)
+            {
+                sb.AppendLine("  » No fundamental conflicts between illumination, distortion, and coma correction.");
+                sb.AppendLine();
+            }
+
             // Aberration floors
             WriteSection(sb, "THEORETICAL ABERRATION FLOORS");
             sb.AppendLine("  These are MINIMUM achievable aberrations - actual design may be worse.");
@@ -410,9 +509,16 @@ namespace FeasibilityAnalyzer
             
             if (output.LimitingFactors.Count > 0)
             {
-                sb.Append($"Key challenges: {string.Join("; ", output.LimitingFactors)}.");
+                sb.Append($"Key challenges: {string.Join("; ", output.LimitingFactors)}. ");
             }
-            
+
+            // Add illumination/distortion conflict summary if present
+            if (output.IlluminationDistortionConflict.HasConflict)
+            {
+                sb.Append($"Note: {output.IlluminationDistortionConflict.ConflictSeverity.ToLower()} " +
+                    "conflicts between illumination and distortion requirements.");
+            }
+
             return sb.ToString();
         }
     }

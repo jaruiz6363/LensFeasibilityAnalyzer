@@ -11,6 +11,9 @@ A standalone C# tool for pre-design feasibility analysis of optical lens systems
 - **Chromatic Analysis**: Estimates color correction requirements and recommends glass pairs
 - **Tolerance Sensitivity**: Predicts manufacturing tolerance contributions to wavefront error
 - **Complexity Estimation**: Estimates element count and design difficulty
+- **Relative Illumination Analysis**: Computes illumination uniformity across field using cos⁴ law and distortion effects
+- **Differential Distortion Analysis**: Analyzes local magnification variation and metrology impact
+- **Constraint Conflict Detection**: Identifies conflicts between illumination, distortion, and coma correction requirements
 
 ## Building
 
@@ -128,9 +131,12 @@ Reads parameters from JSON file, optionally saves report to specified output fil
 7. **Petzval Analysis**: Field curvature correction requirements
 8. **Chromatic Analysis**: Color correction level and glass recommendations
 9. **Tolerance Analysis**: Sensitivity estimates and yield prediction
-10. **Aberration Floors**: Theoretical minimum achievable aberrations
-11. **Complexity Estimate**: Expected element count and cost class
-12. **Recommendations**: Design guidance and relaxation suggestions
+10. **Relative Illumination Analysis**: Illumination uniformity vs field, natural vignetting, distortion effects
+11. **Differential Distortion Analysis**: Local magnification variation, tangential-radial difference, metrology impact
+12. **Illumination/Distortion Conflict Analysis**: Identifies incompatibilities between RI, distortion type, and sine condition
+13. **Aberration Floors**: Theoretical minimum achievable aberrations
+14. **Complexity Estimate**: Expected element count and cost class
+15. **Recommendations**: Design guidance and relaxation suggestions
 
 ## Theory Background
 
@@ -156,4 +162,5 @@ This tool is provided for educational and professional use in optical design.
 
 ## Version History
 
+- 1.1.0: Added relative illumination analysis, differential distortion analysis, and illumination/distortion/coma conflict detection
 - 1.0.0: Initial release with full analysis suite

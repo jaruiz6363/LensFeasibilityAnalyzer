@@ -175,6 +175,76 @@ namespace FeasibilityAnalyzer
     }
 
     /// <summary>
+    /// Relative illumination analysis result
+    /// </summary>
+    public class RelativeIlluminationResult
+    {
+        public List<IlluminationFieldPoint> IlluminationVsField { get; set; } = new List<IlluminationFieldPoint>();
+        public double MinRelativeIllumination { get; set; }  // Minimum RI across field (0-1)
+        public double IlluminationUniformity { get; set; }   // 1 - (max-min)/(max+min)
+        public double NaturalVignettingAtEdge { get; set; }  // cos^4 law contribution
+        public double DistortionContribution { get; set; }   // Distortion effect on RI
+        public double PupilAberrationContribution { get; set; } // Pupil aberration effect
+        public string Severity { get; set; }  // "Negligible", "Minor", "Moderate", "Severe"
+        public string Recommendation { get; set; }
+    }
+
+    public class IlluminationFieldPoint
+    {
+        public double NormalizedField { get; set; }
+        public double RelativeIllumination { get; set; }  // 0-1, where 1 = on-axis
+        public double NaturalVignetting { get; set; }     // cos^4 contribution
+        public double DistortionEffect { get; set; }      // Magnification gradient effect
+    }
+
+    /// <summary>
+    /// Differential distortion analysis result
+    /// </summary>
+    public class DifferentialDistortionResult
+    {
+        public List<DifferentialDistortionPoint> DifferentialVsField { get; set; } = new List<DifferentialDistortionPoint>();
+        public double MaxDifferentialDistortion { get; set; }  // Maximum dβ/dθ deviation (%)
+        public double TangentialRadialDifference { get; set; } // T-R difference at edge (%)
+        public double LocalMagnificationVariation { get; set; } // Max local mag variation (%)
+        public bool IsUniform { get; set; }  // True if differential distortion < 0.5%
+        public string MetrologyImpact { get; set; }  // Impact on measurement applications
+        public string Recommendation { get; set; }
+    }
+
+    public class DifferentialDistortionPoint
+    {
+        public double NormalizedField { get; set; }
+        public double LocalMagnification { get; set; }      // β(θ) at this field
+        public double MagnificationGradient { get; set; }   // dβ/dθ
+        public double DifferentialDistortion { get; set; }  // Deviation from ideal (%)
+        public double TangentialMagnification { get; set; } // Tangential direction
+        public double RadialMagnification { get; set; }     // Radial direction
+    }
+
+    /// <summary>
+    /// Illumination-distortion-differential coupling conflict analysis
+    /// </summary>
+    public class IlluminationDistortionConflictResult
+    {
+        public bool HasConflict { get; set; }
+        public string ConflictSeverity { get; set; }  // "None", "Minor", "Moderate", "Severe"
+        public double ConflictScore { get; set; }     // 0-100, higher = more conflict
+
+        // Specific conflicts
+        public bool IlluminationDistortionConflict { get; set; }
+        public string IlluminationDistortionDetail { get; set; }
+
+        public bool DifferentialSineConditionConflict { get; set; }
+        public string DifferentialSineConditionDetail { get; set; }
+
+        public bool IlluminationTelecentricityConflict { get; set; }
+        public string IlluminationTelecentricityDetail { get; set; }
+
+        public List<string> Conflicts { get; set; } = new List<string>();
+        public List<string> Recommendations { get; set; } = new List<string>();
+    }
+
+    /// <summary>
     /// Aberration floor estimates
     /// </summary>
     public class AberrationFloors
@@ -212,7 +282,7 @@ namespace FeasibilityAnalyzer
     public class FeasibilityOutput
     {
         public DateTime AnalysisTime { get; set; } = DateTime.Now;
-        public string Version { get; set; } = "1.0.0";
+        public string Version { get; set; } = "1.1.0";
         
         // Overall assessment
         public bool IsFeasible { get; set; }
@@ -233,6 +303,11 @@ namespace FeasibilityAnalyzer
         public ToleranceResult Tolerance { get; set; }
         public AberrationFloors AberrationFloors { get; set; }
         public ComplexityEstimate Complexity { get; set; }
+
+        // New illumination and differential distortion analysis
+        public RelativeIlluminationResult RelativeIllumination { get; set; }
+        public DifferentialDistortionResult DifferentialDistortion { get; set; }
+        public IlluminationDistortionConflictResult IlluminationDistortionConflict { get; set; }
         
         // Recommendations
         public List<string> Recommendations { get; set; } = new List<string>();

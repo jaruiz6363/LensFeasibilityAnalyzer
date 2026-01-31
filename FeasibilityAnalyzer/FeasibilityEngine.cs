@@ -39,18 +39,27 @@ namespace FeasibilityAnalyzer
             output.Chromatic = AnalyzeChromatic(input, output.Derived);
             output.Tolerance = AnalyzeTolerance(input, output.Derived);
             
-            // Step 3: Compute aberration floors
+            // Step 3: Analyze relative illumination and differential distortion
+            output.RelativeIllumination = AnalyzeRelativeIllumination(input, output.Derived);
+            output.DifferentialDistortion = AnalyzeDifferentialDistortion(input, output.Derived);
+
+            // Step 4: Check for conflicts between illumination, distortion, and differential distortion
+            output.IlluminationDistortionConflict = CheckIlluminationDistortionConflict(
+                input, output.Derived, output.RelativeIllumination, output.DifferentialDistortion,
+                output.SineCondition, output.Telecentricity);
+
+            // Step 5: Compute aberration floors
             output.AberrationFloors = ComputeAberrationFloors(
-                input, output.Derived, output.SineCondition, 
+                input, output.Derived, output.SineCondition,
                 output.Reversibility, output.Chromatic, output.Petzval);
-            
-            // Step 4: Estimate complexity
+
+            // Step 7: Estimate complexity
             output.Complexity = EstimateComplexity(input, output);
-            
-            // Step 5: Compute overall feasibility score
+
+            // Step 8: Compute overall feasibility score
             ComputeFeasibilityScore(output);
-            
-            // Step 6: Generate recommendations
+
+            // Step 9: Generate recommendations
             GenerateRecommendations(output);
             
             return output;
@@ -818,6 +827,450 @@ namespace FeasibilityAnalyzer
         }
         
         /// <summary>
+        /// Analyze relative illumination across the field
+        /// </summary>
+        private RelativeIlluminationResult AnalyzeRelativeIllumination(
+            FeasibilityInput input, DerivedQuantities derived)
+        {
+            var result = new RelativeIlluminationResult();
+
+            double[] fieldFracs = { 0.0, 0.2, 0.4, 0.6, 0.8, 1.0 };
+            double minRI = 1.0;
+            double maxRI = 1.0;
+            double beta0 = Math.Abs(input.Magnification);
+
+            foreach (double frac in fieldFracs)
+            {
+                double theta = frac * derived.FieldAngleObject;
+                var point = new IlluminationFieldPoint { NormalizedField = frac };
+
+                // Natural vignetting: cos^4(θ) law
+                // This accounts for: obliquity of rays, projection onto tilted surface,
+                // inverse square law, and solid angle compression
+                double cos4 = Math.Pow(Math.Cos(theta), 4);
+                point.NaturalVignetting = cos4;
+
+                // Distortion effect on illumination
+                // Local magnification gradient affects light concentration
+                // RI_distortion ∝ (β(θ)/β₀)² × |d(tanθ')/d(tanθ)|
+                double betaTheta = ComputeDistortionMagnification(
+                    theta, input.DistortionType, input.Magnification,
+                    input.DistortionMax / 100.0, input.WDNominal);
+                double betaRatio = Math.Abs(betaTheta / input.Magnification);
+
+                // Compute magnification gradient effect
+                double distortionEffect = 1.0;
+                if (theta > 1e-6)
+                {
+                    // For different distortion types, the light concentration varies
+                    switch (input.DistortionType)
+                    {
+                        case DistortionType.FTheta:
+                            // F-theta compresses outer field → improves RI
+                            distortionEffect = theta / Math.Tan(theta);
+                            break;
+                        case DistortionType.Orthographic:
+                            // Orthographic: y' = f·sin(θ) → moderate effect
+                            distortionEffect = Math.Cos(theta);
+                            break;
+                        case DistortionType.Barrel:
+                            // Barrel stretches outer field → worsens RI
+                            distortionEffect = 1.0 - 0.5 * input.DistortionMax / 100.0 * Math.Pow(Math.Tan(theta), 2);
+                            break;
+                        case DistortionType.Pincushion:
+                            // Pincushion compresses outer field → improves RI
+                            distortionEffect = 1.0 + 0.5 * input.DistortionMax / 100.0 * Math.Pow(Math.Tan(theta), 2);
+                            break;
+                        default:
+                            distortionEffect = 1.0;
+                            break;
+                    }
+                }
+                point.DistortionEffect = distortionEffect;
+
+                // Combined relative illumination
+                // RI = cos^4(θ) × distortion_effect × telecentricity_factor
+                double telecentricFactor = 1.0;
+                if (input.TelecentricImage)
+                {
+                    // Image telecentricity maintains constant NA → improves uniformity
+                    telecentricFactor = 1.0 / Math.Max(0.5, cos4);
+                    telecentricFactor = Math.Min(telecentricFactor, 1.2); // Cap improvement
+                }
+
+                point.RelativeIllumination = cos4 * distortionEffect * telecentricFactor;
+                point.RelativeIllumination = Math.Min(1.0, Math.Max(0.0, point.RelativeIllumination));
+
+                result.IlluminationVsField.Add(point);
+
+                minRI = Math.Min(minRI, point.RelativeIllumination);
+                maxRI = Math.Max(maxRI, point.RelativeIllumination);
+            }
+
+            result.MinRelativeIllumination = minRI;
+            result.IlluminationUniformity = 1.0 - (maxRI - minRI) / (maxRI + minRI);
+
+            // Analyze contributions at edge of field
+            var edgePoint = result.IlluminationVsField[result.IlluminationVsField.Count - 1];
+            result.NaturalVignettingAtEdge = edgePoint.NaturalVignetting;
+            result.DistortionContribution = Math.Abs(1.0 - edgePoint.DistortionEffect);
+
+            // Pupil aberration contribution (simplified estimate)
+            // Pupil coma and spherical aberration of pupil affect RI
+            result.PupilAberrationContribution = 0.02 * Math.Pow(derived.NAObject, 2) *
+                Math.Pow(derived.FieldAngleObject, 2);
+
+            // Severity classification
+            if (minRI > 0.9)
+            {
+                result.Severity = "Negligible";
+                result.Recommendation = "Relative illumination is excellent (>90% at edge). " +
+                    "No special measures needed.";
+            }
+            else if (minRI > 0.7)
+            {
+                result.Severity = "Minor";
+                result.Recommendation = "Moderate RI roll-off. Consider image-space telecentricity " +
+                    "or vignetting control if uniformity is critical.";
+            }
+            else if (minRI > 0.5)
+            {
+                result.Severity = "Moderate";
+                result.Recommendation = $"Significant RI drop to {minRI:P0} at edge. " +
+                    "May need pupil aberration control or post-processing correction.";
+            }
+            else
+            {
+                result.Severity = "Severe";
+                result.Recommendation = $"Severe RI roll-off ({minRI:P0} at edge). " +
+                    "Consider telecentricity, reducing field angle, or accepting non-uniform illumination.";
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Analyze differential distortion across the field
+        /// </summary>
+        private DifferentialDistortionResult AnalyzeDifferentialDistortion(
+            FeasibilityInput input, DerivedQuantities derived)
+        {
+            var result = new DifferentialDistortionResult();
+
+            double[] fieldFracs = { 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0 };
+            double beta0 = input.Magnification;
+            double maxDiff = 0;
+            double maxLocalVariation = 0;
+
+            // Compute ideal magnification gradient (for rectilinear projection)
+            // For rectilinear: y' = f·tan(θ), so β_ideal = f/cos²(θ) for image height
+            // The "ideal" differential is dβ/dθ = 0 for constant magnification
+
+            List<double> magnifications = new List<double>();
+            List<double> thetas = new List<double>();
+
+            foreach (double frac in fieldFracs)
+            {
+                double theta = frac * derived.FieldAngleObject;
+                thetas.Add(theta);
+
+                double betaTheta = ComputeDistortionMagnification(
+                    theta, input.DistortionType, beta0,
+                    input.DistortionMax / 100.0, input.WDNominal);
+                magnifications.Add(betaTheta);
+            }
+
+            // Compute differential distortion (magnification gradient)
+            for (int i = 0; i < fieldFracs.Length; i++)
+            {
+                var point = new DifferentialDistortionPoint
+                {
+                    NormalizedField = fieldFracs[i],
+                    LocalMagnification = magnifications[i]
+                };
+
+                // Compute gradient using central differences
+                double dBeta_dTheta;
+                if (i == 0)
+                {
+                    // Forward difference at origin
+                    if (thetas[1] - thetas[0] > 1e-10)
+                        dBeta_dTheta = (magnifications[1] - magnifications[0]) / (thetas[1] - thetas[0]);
+                    else
+                        dBeta_dTheta = 0;
+                }
+                else if (i == fieldFracs.Length - 1)
+                {
+                    // Backward difference at edge
+                    dBeta_dTheta = (magnifications[i] - magnifications[i - 1]) / (thetas[i] - thetas[i - 1]);
+                }
+                else
+                {
+                    // Central difference
+                    dBeta_dTheta = (magnifications[i + 1] - magnifications[i - 1]) / (thetas[i + 1] - thetas[i - 1]);
+                }
+
+                point.MagnificationGradient = dBeta_dTheta;
+
+                // Differential distortion as deviation from constant magnification
+                // Expressed as percentage variation
+                if (Math.Abs(beta0) > 1e-10)
+                {
+                    point.DifferentialDistortion = Math.Abs(dBeta_dTheta) / Math.Abs(beta0) * 100.0;
+                }
+
+                // Tangential vs radial magnification difference
+                // In presence of astigmatism, these differ
+                // Simplified model: T-R difference ∝ field² × NA²
+                double theta = thetas[i];
+                double astigFactor = Math.Pow(theta, 2) * Math.Pow(derived.NAObject, 2);
+                point.TangentialMagnification = magnifications[i] * (1.0 + 0.1 * astigFactor);
+                point.RadialMagnification = magnifications[i] * (1.0 - 0.1 * astigFactor);
+
+                result.DifferentialVsField.Add(point);
+
+                maxDiff = Math.Max(maxDiff, point.DifferentialDistortion);
+
+                // Local variation from nominal
+                double localVar = Math.Abs((magnifications[i] - beta0) / beta0) * 100.0;
+                maxLocalVariation = Math.Max(maxLocalVariation, localVar);
+            }
+
+            result.MaxDifferentialDistortion = maxDiff;
+            result.LocalMagnificationVariation = maxLocalVariation;
+
+            // T-R difference at edge
+            var edgePt = result.DifferentialVsField[result.DifferentialVsField.Count - 1];
+            if (Math.Abs(edgePt.LocalMagnification) > 1e-10)
+            {
+                result.TangentialRadialDifference = Math.Abs(
+                    (edgePt.TangentialMagnification - edgePt.RadialMagnification) /
+                    edgePt.LocalMagnification) * 100.0;
+            }
+
+            result.IsUniform = maxDiff < 0.5;
+
+            // Metrology impact assessment
+            if (maxDiff < 0.1)
+            {
+                result.MetrologyImpact = "Excellent - suitable for precision metrology";
+                result.Recommendation = "Differential distortion is negligible. " +
+                    "Suitable for high-precision measurement applications.";
+            }
+            else if (maxDiff < 0.5)
+            {
+                result.MetrologyImpact = "Good - suitable for general metrology with calibration";
+                result.Recommendation = "Minor differential distortion. Calibration can correct " +
+                    "for measurement applications. No fundamental conflict.";
+            }
+            else if (maxDiff < 2.0)
+            {
+                result.MetrologyImpact = "Moderate - requires careful calibration";
+                result.Recommendation = $"Noticeable differential distortion ({maxDiff:F1}%). " +
+                    "Measurement accuracy depends on calibration quality.";
+            }
+            else
+            {
+                result.MetrologyImpact = "Limited - challenging for precision metrology";
+                result.Recommendation = $"Significant differential distortion ({maxDiff:F1}%). " +
+                    "Consider rectilinear projection if measurement accuracy is critical.";
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Check for conflicts between relative illumination, distortion, and differential distortion
+        /// </summary>
+        private IlluminationDistortionConflictResult CheckIlluminationDistortionConflict(
+            FeasibilityInput input, DerivedQuantities derived,
+            RelativeIlluminationResult riResult, DifferentialDistortionResult ddResult,
+            SineConditionResult sineResult, TelecentricityResult teleResult)
+        {
+            var result = new IlluminationDistortionConflictResult();
+            double conflictScore = 0;
+
+            // ═══════════════════════════════════════════════════════════════════
+            // CONFLICT 1: Illumination vs Distortion Type
+            // ═══════════════════════════════════════════════════════════════════
+            // Some distortion types inherently worsen or improve relative illumination
+
+            result.IlluminationDistortionConflict = false;
+            bool wantsUniformIllumination = riResult.MinRelativeIllumination < 0.7 ||
+                                            input.TelecentricImage;
+
+            switch (input.DistortionType)
+            {
+                case DistortionType.Barrel:
+                    // Barrel distortion stretches outer field → worsens RI
+                    if (wantsUniformIllumination && input.DistortionMax > 2.0)
+                    {
+                        result.IlluminationDistortionConflict = true;
+                        result.IlluminationDistortionDetail =
+                            $"Barrel distortion ({input.DistortionMax:F1}%) stretches outer field, " +
+                            "reducing relative illumination at edges. This conflicts with uniform " +
+                            "illumination requirements.";
+                        result.Conflicts.Add("Barrel distortion worsens edge illumination");
+                        result.Recommendations.Add("Consider f-theta or pincushion if uniform RI is needed");
+                        conflictScore += 15;
+                    }
+                    break;
+
+                case DistortionType.FTheta:
+                    // F-theta compresses outer field → helps RI but conflicts with sine condition
+                    if (sineResult.MaxBetaDiscrepancy > 0.02)
+                    {
+                        // Note: F-theta actually helps illumination but hurts coma
+                        result.IlluminationDistortionDetail =
+                            "F-theta distortion improves edge illumination but creates " +
+                            $"sine condition conflict (β discrepancy: {sineResult.MaxBetaDiscrepancy * 100:F1}%).";
+                    }
+                    break;
+
+                case DistortionType.Orthographic:
+                    // Orthographic has moderate illumination effect
+                    if (wantsUniformIllumination && derived.FieldAngleObject > 0.3)
+                    {
+                        result.IlluminationDistortionConflict = true;
+                        result.IlluminationDistortionDetail =
+                            "Orthographic projection at wide field angles causes significant " +
+                            "illumination roll-off (follows cos law).";
+                        result.Conflicts.Add("Orthographic projection causes RI roll-off at wide angles");
+                        conflictScore += 10;
+                    }
+                    break;
+            }
+
+            // ═══════════════════════════════════════════════════════════════════
+            // CONFLICT 2: Differential Distortion vs Sine Condition
+            // ═══════════════════════════════════════════════════════════════════
+            // The sine condition requires specific magnification variation for coma correction
+            // Distortion types impose different magnification variations
+            // The mismatch creates both coma AND differential distortion issues
+
+            result.DifferentialSineConditionConflict = false;
+
+            // Compare required magnification gradients
+            // Sine condition: β(θ) = β₀/cos(θ) → dβ/dθ = β₀·sin(θ)/cos²(θ)
+            // Distortion: varies by type
+
+            double theta_edge = derived.FieldAngleObject;
+            double sineBetaGradient = 0;
+            if (theta_edge > 1e-6)
+            {
+                sineBetaGradient = Math.Abs(input.Magnification) *
+                    Math.Sin(theta_edge) / Math.Pow(Math.Cos(theta_edge), 2);
+            }
+
+            // Get actual distortion-imposed gradient at edge
+            double actualGradient = 0;
+            if (ddResult.DifferentialVsField.Count > 0)
+            {
+                actualGradient = Math.Abs(ddResult.DifferentialVsField[
+                    ddResult.DifferentialVsField.Count - 1].MagnificationGradient);
+            }
+
+            double gradientMismatch = 0;
+            if (sineBetaGradient > 1e-6)
+            {
+                gradientMismatch = Math.Abs(actualGradient - sineBetaGradient) / sineBetaGradient;
+            }
+
+            if (gradientMismatch > 0.1 && sineResult.InducedComaWaves > 0.05)
+            {
+                result.DifferentialSineConditionConflict = true;
+                result.DifferentialSineConditionDetail =
+                    $"The distortion type requires a magnification gradient that differs " +
+                    $"from the sine condition by {gradientMismatch * 100:F0}%. This causes both " +
+                    $"coma ({sineResult.InducedComaWaves:F2} waves) and non-uniform differential " +
+                    $"distortion ({ddResult.MaxDifferentialDistortion:F1}%).";
+                result.Conflicts.Add("Distortion gradient conflicts with sine condition");
+                result.Recommendations.Add("Accept coma at edge OR relax distortion requirement");
+                conflictScore += 20 * gradientMismatch;
+            }
+
+            // ═══════════════════════════════════════════════════════════════════
+            // CONFLICT 3: Illumination vs Telecentricity
+            // ═══════════════════════════════════════════════════════════════════
+            // Double telecentricity can't exist with m≠1, but single telecentricity
+            // may conflict with illumination requirements
+
+            result.IlluminationTelecentricityConflict = false;
+
+            if (input.TelecentricObject && !input.TelecentricImage)
+            {
+                // Object telecentric without image telecentric
+                // May have illumination issues due to pupil position
+                if (riResult.MinRelativeIllumination < 0.6)
+                {
+                    result.IlluminationTelecentricityConflict = true;
+                    result.IlluminationTelecentricityDetail =
+                        "Object-side telecentricity without image-side telecentricity " +
+                        "can lead to illumination non-uniformity due to stop position.";
+                    result.Conflicts.Add("Object telecentricity without image telecentricity affects RI");
+                    result.Recommendations.Add("Add image-side telecentricity or accept RI variation");
+                    conflictScore += 10;
+                }
+            }
+
+            if (input.TelecentricObject && input.TelecentricImage &&
+                Math.Abs(Math.Abs(input.Magnification) - 1.0) > 0.01)
+            {
+                // Already flagged in telecentricity analysis, but affects illumination too
+                result.IlluminationTelecentricityConflict = true;
+                result.IlluminationTelecentricityDetail =
+                    "True double telecentricity requires |m|=1. With m≠1, " +
+                    "illumination uniformity cannot be optimized simultaneously.";
+                conflictScore += 15;
+            }
+
+            // ═══════════════════════════════════════════════════════════════════
+            // ADDITIONAL COUPLING: Differential distortion affects RI measurement
+            // ═══════════════════════════════════════════════════════════════════
+
+            if (ddResult.MaxDifferentialDistortion > 1.0 && riResult.Severity != "Negligible")
+            {
+                result.Conflicts.Add(
+                    $"Differential distortion ({ddResult.MaxDifferentialDistortion:F1}%) " +
+                    "complicates relative illumination characterization");
+                result.Recommendations.Add(
+                    "Characterize RI and distortion together for accurate calibration");
+                conflictScore += 5;
+            }
+
+            // Overall assessment
+            result.ConflictScore = Math.Min(100, conflictScore);
+            result.HasConflict = result.ConflictScore > 10;
+
+            if (result.ConflictScore < 10)
+            {
+                result.ConflictSeverity = "None";
+            }
+            else if (result.ConflictScore < 25)
+            {
+                result.ConflictSeverity = "Minor";
+            }
+            else if (result.ConflictScore < 50)
+            {
+                result.ConflictSeverity = "Moderate";
+            }
+            else
+            {
+                result.ConflictSeverity = "Severe";
+            }
+
+            // Add general recommendations if conflicts exist
+            if (result.HasConflict && result.Recommendations.Count == 0)
+            {
+                result.Recommendations.Add(
+                    "Review distortion, illumination, and coma requirements together - " +
+                    "they are fundamentally coupled through the sine condition.");
+            }
+
+            return result;
+        }
+
+        /// <summary>
         /// Compute aberration floors
         /// </summary>
         private AberrationFloors ComputeAberrationFloors(
@@ -1093,7 +1546,40 @@ namespace FeasibilityAnalyzer
                 score -= 20;
                 output.LimitingFactors.Add($"Aberration floor > diffraction limit");
             }
-            
+
+            // Relative illumination penalty
+            if (output.RelativeIllumination.MinRelativeIllumination < 0.5)
+            {
+                score -= 15;
+                output.LimitingFactors.Add($"Severe relative illumination drop ({output.RelativeIllumination.MinRelativeIllumination:P0} at edge)");
+            }
+            else if (output.RelativeIllumination.MinRelativeIllumination < 0.7)
+            {
+                score -= 5;
+                output.LimitingFactors.Add("Moderate relative illumination non-uniformity");
+            }
+
+            // Differential distortion penalty
+            if (output.DifferentialDistortion.MaxDifferentialDistortion > 2.0)
+            {
+                score -= 10;
+                output.LimitingFactors.Add($"High differential distortion ({output.DifferentialDistortion.MaxDifferentialDistortion:F1}%)");
+            }
+
+            // Illumination-distortion conflict penalty
+            if (output.IlluminationDistortionConflict.HasConflict)
+            {
+                score -= output.IlluminationDistortionConflict.ConflictScore * 0.3;
+                if (output.IlluminationDistortionConflict.ConflictSeverity == "Severe")
+                {
+                    output.LimitingFactors.Add("Severe illumination/distortion/coma conflicts");
+                }
+                else if (output.IlluminationDistortionConflict.ConflictSeverity == "Moderate")
+                {
+                    output.LimitingFactors.Add("Moderate illumination/distortion constraints");
+                }
+            }
+
             output.FeasibilityScore = Math.Max(0, Math.Min(100, score));
             output.IsFeasible = output.FeasibilityScore >= 50;
         }
@@ -1143,7 +1629,33 @@ namespace FeasibilityAnalyzer
                 output.Recommendations.Add(
                     "Consider field flattener group near image plane.");
             }
-            
+
+            // Relative illumination recommendations
+            if (output.RelativeIllumination.Severity == "Severe" ||
+                output.RelativeIllumination.Severity == "Moderate")
+            {
+                output.Recommendations.Add(
+                    $"Address relative illumination ({output.RelativeIllumination.MinRelativeIllumination:P0} at edge): " +
+                    "consider image-side telecentricity or vignetting control.");
+            }
+
+            // Differential distortion recommendations
+            if (!output.DifferentialDistortion.IsUniform)
+            {
+                output.Recommendations.Add(
+                    $"Differential distortion ({output.DifferentialDistortion.MaxDifferentialDistortion:F1}%) " +
+                    "may affect measurement applications. Consider calibration requirements.");
+            }
+
+            // Illumination-distortion conflict recommendations
+            if (output.IlluminationDistortionConflict.HasConflict)
+            {
+                foreach (var rec in output.IlluminationDistortionConflict.Recommendations)
+                {
+                    output.Recommendations.Add(rec);
+                }
+            }
+
             // Relaxation suggestions if not feasible
             if (!output.IsFeasible)
             {
@@ -1176,7 +1688,25 @@ namespace FeasibilityAnalyzer
                     output.RelaxationSuggestions.Add(
                         "Reduce WD range or add motorized focus");
                 }
-                
+
+                if (output.RelativeIllumination.MinRelativeIllumination < 0.7)
+                {
+                    output.RelaxationSuggestions.Add(
+                        "Accept non-uniform illumination or add image-side telecentricity");
+                }
+
+                if (output.DifferentialDistortion.MaxDifferentialDistortion > 1.0)
+                {
+                    output.RelaxationSuggestions.Add(
+                        "Use rectilinear projection or accept calibration requirements");
+                }
+
+                if (output.IlluminationDistortionConflict.HasConflict)
+                {
+                    output.RelaxationSuggestions.Add(
+                        "Prioritize either illumination uniformity OR distortion type - both may not be achievable");
+                }
+
                 output.RelaxationSuggestions.Add(
                     "Reduce NA (easiest path to simplification)");
                 output.RelaxationSuggestions.Add(
