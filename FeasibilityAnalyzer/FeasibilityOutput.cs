@@ -192,9 +192,11 @@ namespace FeasibilityAnalyzer
     public class IlluminationFieldPoint
     {
         public double NormalizedField { get; set; }
-        public double RelativeIllumination { get; set; }  // 0-1, where 1 = on-axis
-        public double NaturalVignetting { get; set; }     // cos^4 contribution
-        public double DistortionEffect { get; set; }      // Magnification gradient effect
+        public double RelativeIllumination { get; set; }  // Relative to on-axis (1.0 = on-axis)
+        public double NaturalVignetting { get; set; }     // cos^4(θ) contribution
+        public double DistortionEffect { get; set; }      // 1/[(1+D)(1+D+y×dD/dy)] factor
+        public double Distortion { get; set; }            // D at this field point
+        public double DifferentialDistortion { get; set; } // y × dD/dy at this field point
     }
 
     /// <summary>
@@ -282,7 +284,7 @@ namespace FeasibilityAnalyzer
     public class FeasibilityOutput
     {
         public DateTime AnalysisTime { get; set; } = DateTime.Now;
-        public string Version { get; set; } = "1.1.0";
+        public string Version { get; set; } = "1.2.0";
         
         // Overall assessment
         public bool IsFeasible { get; set; }

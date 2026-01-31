@@ -827,7 +827,16 @@ namespace FeasibilityAnalyzer
         }
         
         /// <summary>
-        /// Analyze relative illumination across the field
+        /// Analyze relative illumination across the field using the full formula from
+        /// R. Siew, "Relative illumination and image distortion," Opt. Eng. 56(4), 049701 (2017).
+        ///
+        /// R(y) ≈ [A_EN(y)/A_EN(0)] × cos⁴(θ) / [(1 + D)(1 + D + y × dD/dy)]
+        ///
+        /// Where:
+        /// - A_EN(y)/A_EN(0) = entrance pupil area ratio (accounts for pupil aberrations)
+        /// - θ = object-side field angle
+        /// - D = image distortion (fractional)
+        /// - dD/dy = differential distortion
         /// </summary>
         private RelativeIlluminationResult AnalyzeRelativeIllumination(
             FeasibilityInput input, DerivedQuantities derived)
@@ -837,88 +846,118 @@ namespace FeasibilityAnalyzer
             double[] fieldFracs = { 0.0, 0.2, 0.4, 0.6, 0.8, 1.0 };
             double minRI = 1.0;
             double maxRI = 1.0;
-            double beta0 = Math.Abs(input.Magnification);
+
+            // Object height at full field
+            double yMax = derived.FieldObject;
 
             foreach (double frac in fieldFracs)
             {
                 double theta = frac * derived.FieldAngleObject;
+                double y = frac * yMax;  // Object height at this field fraction
                 var point = new IlluminationFieldPoint { NormalizedField = frac };
 
-                // Natural vignetting: cos^4(θ) law
-                // This accounts for: obliquity of rays, projection onto tilted surface,
-                // inverse square law, and solid angle compression
+                // ══════════════════════════════════════════════════════════════
+                // TERM 1: cos⁴(θ) - Natural vignetting from oblique geometry
+                // ══════════════════════════════════════════════════════════════
                 double cos4 = Math.Pow(Math.Cos(theta), 4);
                 point.NaturalVignetting = cos4;
 
-                // Distortion effect on illumination
-                // Local magnification gradient affects light concentration
-                // RI_distortion ∝ (β(θ)/β₀)² × |d(tanθ')/d(tanθ)|
-                double betaTheta = ComputeDistortionMagnification(
-                    theta, input.DistortionType, input.Magnification,
-                    input.DistortionMax / 100.0, input.WDNominal);
-                double betaRatio = Math.Abs(betaTheta / input.Magnification);
-
-                // Compute magnification gradient effect
-                double distortionEffect = 1.0;
-                if (theta > 1e-6)
+                // ══════════════════════════════════════════════════════════════
+                // TERM 2: Entrance pupil area ratio A_EN(y)/A_EN(0)
+                // ══════════════════════════════════════════════════════════════
+                // This accounts for pupil aberrations (pupil coma, spherical aberration of pupil)
+                // For systems with no elements between object and stop: ratio = 1
+                // For telecentric systems: ratio ≈ 1 (by design)
+                // Otherwise, estimate based on chief ray angle and NA
+                double pupilAreaRatio = 1.0;
+                if (!input.TelecentricObject && theta > 1e-6)
                 {
-                    // For different distortion types, the light concentration varies
-                    switch (input.DistortionType)
-                    {
-                        case DistortionType.FTheta:
-                            // F-theta compresses outer field → improves RI
-                            distortionEffect = theta / Math.Tan(theta);
-                            break;
-                        case DistortionType.Orthographic:
-                            // Orthographic: y' = f·sin(θ) → moderate effect
-                            distortionEffect = Math.Cos(theta);
-                            break;
-                        case DistortionType.Barrel:
-                            // Barrel stretches outer field → worsens RI
-                            distortionEffect = 1.0 - 0.5 * input.DistortionMax / 100.0 * Math.Pow(Math.Tan(theta), 2);
-                            break;
-                        case DistortionType.Pincushion:
-                            // Pincushion compresses outer field → improves RI
-                            distortionEffect = 1.0 + 0.5 * input.DistortionMax / 100.0 * Math.Pow(Math.Tan(theta), 2);
-                            break;
-                        default:
-                            distortionEffect = 1.0;
-                            break;
-                    }
-                }
-                point.DistortionEffect = distortionEffect;
-
-                // Combined relative illumination
-                // RI = cos^4(θ) × distortion_effect × telecentricity_factor
-                double telecentricFactor = 1.0;
-                if (input.TelecentricImage)
-                {
-                    // Image telecentricity maintains constant NA → improves uniformity
-                    telecentricFactor = 1.0 / Math.Max(0.5, cos4);
-                    telecentricFactor = Math.Min(telecentricFactor, 1.2); // Cap improvement
+                    // Simplified model: pupil aberration causes area variation
+                    // This is a second-order effect proportional to field² × NA²
+                    double pupilAberrationFactor = 0.1 * Math.Pow(theta, 2) * Math.Pow(derived.NAObject, 2);
+                    pupilAreaRatio = 1.0 - pupilAberrationFactor;
+                    pupilAreaRatio = Math.Max(0.5, Math.Min(1.5, pupilAreaRatio));
                 }
 
-                point.RelativeIllumination = cos4 * distortionEffect * telecentricFactor;
-                point.RelativeIllumination = Math.Min(1.0, Math.Max(0.0, point.RelativeIllumination));
+                // ══════════════════════════════════════════════════════════════
+                // TERM 3: Distortion D at this field point
+                // ══════════════════════════════════════════════════════════════
+                double D = ComputeDistortion(theta, input.DistortionType, input.DistortionMax / 100.0);
+
+                // ══════════════════════════════════════════════════════════════
+                // TERM 4: Differential distortion dD/dy
+                // ══════════════════════════════════════════════════════════════
+                double dD_dy = ComputeDifferentialDistortion(
+                    theta, y, yMax, input.DistortionType, input.DistortionMax / 100.0, input.WDNominal);
+
+                // ══════════════════════════════════════════════════════════════
+                // FULL FORMULA: R(y) = [A_EN ratio] × cos⁴(θ) / [(1+D)(1 + D + y×dD/dy)]
+                // ══════════════════════════════════════════════════════════════
+                double denominator1 = 1.0 + D;
+                double denominator2 = 1.0 + D + y * dD_dy;
+
+                // Guard against division by zero or negative values
+                denominator1 = Math.Max(0.1, denominator1);
+                denominator2 = Math.Max(0.1, denominator2);
+
+                double distortionFactor = 1.0 / (denominator1 * denominator2);
+                point.DistortionEffect = distortionFactor;
+                point.Distortion = D;
+                point.DifferentialDistortion = y * dD_dy;  // The y×dD/dy term
+
+                // Combined relative illumination using the full Siew formula
+                point.RelativeIllumination = pupilAreaRatio * cos4 * distortionFactor;
+
+                // Apply telecentricity correction if image-side telecentric
+                // (telecentric designs have reduced RI variation by maintaining constant NA)
+                if (input.TelecentricImage && theta > 1e-6)
+                {
+                    // Image telecentricity partially compensates for cos⁴ roll-off
+                    // by maintaining constant solid angle subtended by exit pupil
+                    double telecentricBoost = Math.Pow(1.0 / Math.Cos(theta), 2);
+                    telecentricBoost = Math.Min(telecentricBoost, 1.5); // Cap the improvement
+                    point.RelativeIllumination *= telecentricBoost;
+                }
+
+                // Normalize: RI should not exceed 1 at any point for feasibility assessment
+                // (though physically it can exceed 1 relative to on-axis, we normalize for clarity)
+                point.RelativeIllumination = Math.Max(0.0, point.RelativeIllumination);
 
                 result.IlluminationVsField.Add(point);
 
-                minRI = Math.Min(minRI, point.RelativeIllumination);
-                maxRI = Math.Max(maxRI, point.RelativeIllumination);
+                if (frac > 0)  // Don't include on-axis in min/max for ratio calculation
+                {
+                    minRI = Math.Min(minRI, point.RelativeIllumination);
+                    maxRI = Math.Max(maxRI, point.RelativeIllumination);
+                }
+            }
+
+            // Normalize all values relative to on-axis (first point)
+            double onAxisRI = result.IlluminationVsField[0].RelativeIllumination;
+            if (onAxisRI > 1e-6)
+            {
+                minRI = 1.0;
+                maxRI = 1.0;
+                foreach (var pt in result.IlluminationVsField)
+                {
+                    pt.RelativeIllumination /= onAxisRI;
+                    minRI = Math.Min(minRI, pt.RelativeIllumination);
+                    maxRI = Math.Max(maxRI, pt.RelativeIllumination);
+                }
             }
 
             result.MinRelativeIllumination = minRI;
-            result.IlluminationUniformity = 1.0 - (maxRI - minRI) / (maxRI + minRI);
+            result.IlluminationUniformity = (maxRI + minRI > 0) ?
+                1.0 - (maxRI - minRI) / (maxRI + minRI) : 0.0;
 
             // Analyze contributions at edge of field
             var edgePoint = result.IlluminationVsField[result.IlluminationVsField.Count - 1];
             result.NaturalVignettingAtEdge = edgePoint.NaturalVignetting;
             result.DistortionContribution = Math.Abs(1.0 - edgePoint.DistortionEffect);
 
-            // Pupil aberration contribution (simplified estimate)
-            // Pupil coma and spherical aberration of pupil affect RI
-            result.PupilAberrationContribution = 0.02 * Math.Pow(derived.NAObject, 2) *
-                Math.Pow(derived.FieldAngleObject, 2);
+            // Pupil aberration contribution estimate
+            result.PupilAberrationContribution = 0.1 * Math.Pow(derived.FieldAngleObject, 2) *
+                Math.Pow(derived.NAObject, 2);
 
             // Severity classification
             if (minRI > 0.9)
@@ -937,16 +976,126 @@ namespace FeasibilityAnalyzer
             {
                 result.Severity = "Moderate";
                 result.Recommendation = $"Significant RI drop to {minRI:P0} at edge. " +
+                    "Distortion and differential distortion are contributing factors. " +
                     "May need pupil aberration control or post-processing correction.";
             }
             else
             {
                 result.Severity = "Severe";
                 result.Recommendation = $"Severe RI roll-off ({minRI:P0} at edge). " +
-                    "Consider telecentricity, reducing field angle, or accepting non-uniform illumination.";
+                    "The combination of cos⁴ law, distortion, and differential distortion " +
+                    "causes significant non-uniformity. Consider telecentricity or reducing field angle.";
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Compute image distortion D at a given field angle
+        /// D = (y'_actual - y'_paraxial) / y'_paraxial
+        /// </summary>
+        private double ComputeDistortion(double theta, DistortionType type, double distMax)
+        {
+            if (theta < 1e-10) return 0.0;
+
+            switch (type)
+            {
+                case DistortionType.None:
+                    return 0.0;
+
+                case DistortionType.FTheta:
+                    // F-theta: y' = f×θ instead of y' = f×tan(θ)
+                    // D = (θ/tan(θ)) - 1
+                    return (theta / Math.Tan(theta)) - 1.0;
+
+                case DistortionType.Orthographic:
+                    // Orthographic: y' = f×sin(θ) instead of y' = f×tan(θ)
+                    // D = (sin(θ)/tan(θ)) - 1 = cos(θ) - 1
+                    return Math.Cos(theta) - 1.0;
+
+                case DistortionType.Barrel:
+                    // Barrel: negative distortion, D = -k×tan²(θ)
+                    return -distMax * Math.Pow(Math.Tan(theta), 2);
+
+                case DistortionType.Pincushion:
+                    // Pincushion: positive distortion, D = +k×tan²(θ)
+                    return distMax * Math.Pow(Math.Tan(theta), 2);
+
+                case DistortionType.Mustache:
+                    // Mustache: barrel near center, pincushion at edge
+                    // D = -k₁×tan²(θ) + k₂×tan⁴(θ)
+                    double tan2 = Math.Pow(Math.Tan(theta), 2);
+                    return -distMax * tan2 + 0.5 * distMax * tan2 * tan2;
+
+                default:
+                    return 0.0;
+            }
+        }
+
+        /// <summary>
+        /// Compute differential distortion dD/dy at a given field point
+        /// This is the instantaneous rate of change of distortion with object height
+        /// </summary>
+        private double ComputeDifferentialDistortion(
+            double theta, double y, double yMax, DistortionType type, double distMax, double WD)
+        {
+            if (theta < 1e-10 || y < 1e-10) return 0.0;
+
+            // Compute dD/dθ first, then convert to dD/dy using dy/dθ = WD/cos²(θ)
+            double dD_dTheta = 0.0;
+            double cosTheta = Math.Cos(theta);
+            double sinTheta = Math.Sin(theta);
+            double tanTheta = Math.Tan(theta);
+
+            switch (type)
+            {
+                case DistortionType.None:
+                    dD_dTheta = 0.0;
+                    break;
+
+                case DistortionType.FTheta:
+                    // D = θ/tan(θ) - 1
+                    // dD/dθ = (tan(θ) - θ/cos²(θ)) / tan²(θ)
+                    //       = (sin(θ)cos(θ) - θ) / (sin²(θ)cos(θ))
+                    if (sinTheta > 1e-6)
+                    {
+                        dD_dTheta = (sinTheta * cosTheta - theta) / (sinTheta * sinTheta * cosTheta);
+                    }
+                    break;
+
+                case DistortionType.Orthographic:
+                    // D = cos(θ) - 1
+                    // dD/dθ = -sin(θ)
+                    dD_dTheta = -sinTheta;
+                    break;
+
+                case DistortionType.Barrel:
+                    // D = -k×tan²(θ)
+                    // dD/dθ = -2k×tan(θ)/cos²(θ) = -2k×tan(θ)×sec²(θ)
+                    dD_dTheta = -2.0 * distMax * tanTheta / (cosTheta * cosTheta);
+                    break;
+
+                case DistortionType.Pincushion:
+                    // D = +k×tan²(θ)
+                    // dD/dθ = +2k×tan(θ)/cos²(θ)
+                    dD_dTheta = 2.0 * distMax * tanTheta / (cosTheta * cosTheta);
+                    break;
+
+                case DistortionType.Mustache:
+                    // D = -k×tan²(θ) + 0.5k×tan⁴(θ)
+                    // dD/dθ = -2k×tan(θ)×sec²(θ) + 2k×tan³(θ)×sec²(θ)
+                    double sec2 = 1.0 / (cosTheta * cosTheta);
+                    dD_dTheta = (-2.0 * distMax * tanTheta + 2.0 * distMax * Math.Pow(tanTheta, 3)) * sec2;
+                    break;
+            }
+
+            // Convert dD/dθ to dD/dy
+            // y = WD × tan(θ)  →  dy/dθ = WD / cos²(θ)
+            // Therefore: dD/dy = dD/dθ × dθ/dy = dD/dθ × cos²(θ) / WD
+            double dTheta_dy = cosTheta * cosTheta / WD;
+            double dD_dy = dD_dTheta * dTheta_dy;
+
+            return dD_dy;
         }
 
         /// <summary>

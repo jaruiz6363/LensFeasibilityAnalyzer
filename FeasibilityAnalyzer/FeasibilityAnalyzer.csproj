@@ -7,7 +7,7 @@
     <AssemblyName>LensFeasibility</AssemblyName>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>disable</Nullable>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <Authors>Optical Design Tools</Authors>
     <Description>Eikonal-based lens feasibility analysis tool for pre-design assessment</Description>
   </PropertyGroup>

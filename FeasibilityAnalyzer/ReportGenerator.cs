@@ -268,23 +268,28 @@ namespace FeasibilityAnalyzer
             
             // Relative illumination analysis
             WriteSection(sb, "RELATIVE ILLUMINATION ANALYSIS");
+            sb.AppendLine("  Formula: R(y) = [A_EN(y)/A_EN(0)] × cos⁴θ / [(1+D)(1+D+y·dD/dy)]");
+            sb.AppendLine("  Reference: R. Siew, Opt. Eng. 56(4), 049701 (2017)");
+            sb.AppendLine();
             sb.AppendLine($"  Min relative illumination: {output.RelativeIllumination.MinRelativeIllumination:P1}");
             sb.AppendLine($"  Illumination uniformity:   {output.RelativeIllumination.IlluminationUniformity:P1}");
-            sb.AppendLine($"  Natural vignetting (edge): {output.RelativeIllumination.NaturalVignettingAtEdge:P1}");
-            sb.AppendLine($"  Distortion contribution:   {output.RelativeIllumination.DistortionContribution * 100:F1}%");
-            sb.AppendLine($"  Pupil aberration contrib:  {output.RelativeIllumination.PupilAberrationContribution * 100:F2}%");
+            sb.AppendLine($"  Natural vignetting (edge): {output.RelativeIllumination.NaturalVignettingAtEdge:P1} (cos⁴θ term)");
+            sb.AppendLine($"  Distortion contribution:   {output.RelativeIllumination.DistortionContribution * 100:F1}% (1/[(1+D)(1+D+y·dD/dy)] deviation)");
+            sb.AppendLine($"  Pupil aberration contrib:  {output.RelativeIllumination.PupilAberrationContribution * 100:F2}% (A_EN ratio)");
             sb.AppendLine($"  Severity:                  {output.RelativeIllumination.Severity}");
             sb.AppendLine();
 
             if (output.RelativeIllumination.IlluminationVsField.Count > 0)
             {
                 sb.AppendLine("  Illumination vs Field:");
-                sb.AppendLine("    Field    RI      cos⁴    Dist.Effect");
-                sb.AppendLine("    ─────    ────    ────    ───────────");
+                sb.AppendLine("    Field    RI      cos⁴θ   D(%)     y·dD/dy   Dist.Factor");
+                sb.AppendLine("    ─────    ────    ─────   ─────    ───────   ───────────");
                 foreach (var pt in output.RelativeIllumination.IlluminationVsField)
                 {
-                    sb.AppendLine($"    {pt.NormalizedField:F1}      {pt.RelativeIllumination:F3}   {pt.NaturalVignetting:F3}   {pt.DistortionEffect:F3}");
+                    sb.AppendLine($"    {pt.NormalizedField:F1}      {pt.RelativeIllumination:F3}   {pt.NaturalVignetting:F3}   {pt.Distortion * 100:F2}    {pt.DifferentialDistortion:F4}    {pt.DistortionEffect:F3}");
                 }
+                sb.AppendLine();
+                sb.AppendLine("    Where: Dist.Factor = 1/[(1+D)(1+D+y·dD/dy)]");
                 sb.AppendLine();
             }
 

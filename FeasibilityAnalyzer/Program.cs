@@ -14,7 +14,7 @@ namespace FeasibilityAnalyzer
         {
             Console.WriteLine();
             Console.WriteLine("╔══════════════════════════════════════════════════════════════════════════╗");
-            Console.WriteLine("║              LENS FEASIBILITY ANALYZER v1.1                              ║");
+            Console.WriteLine("║              LENS FEASIBILITY ANALYZER v1.2                              ║");
             Console.WriteLine("║              Eikonal-Based Pre-Design Assessment Tool                    ║");
             Console.WriteLine("╚══════════════════════════════════════════════════════════════════════════╝");
             Console.WriteLine();

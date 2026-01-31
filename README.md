@@ -162,5 +162,6 @@ This tool is provided for educational and professional use in optical design.
 
 ## Version History
 
+- 1.2.0: Improved relative illumination formula using Siew's full equation R(y)=[A_EN(y)/A_EN(0)]×cos⁴θ/[(1+D)(1+D+y·dD/dy)] incorporating distortion and differential distortion effects
 - 1.1.0: Added relative illumination analysis, differential distortion analysis, and illumination/distortion/coma conflict detection
 - 1.0.0: Initial release with full analysis suite
